@@ -3,6 +3,10 @@
 
 #include <Arduino.h>
 
+#ifndef ENABLE_DATALOGGING
+#define ENABLE_DATALOGGING 0
+#endif
+
 // Initializes the SD card and opens files for logging raw and filtered sensor data.
 void setupFiles();
 

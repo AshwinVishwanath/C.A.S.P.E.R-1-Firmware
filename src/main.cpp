@@ -17,8 +17,10 @@ void setup() {
   float initialAltitude = getRelativeAltitude();
   ekfInit(0.0f, initialAltitude, 0.0f, 0.0f, 0.0f, 0.0f);
   resetIntegratedAngles();
+#if ENABLE_DATALOGGING
   setupFiles();
   Summarylog("Core debug loop initialized with EKF and datalogging enabled.");
+#endif
 }
 
 void loop() {
@@ -60,7 +62,9 @@ void loop() {
   float x, y, z, vx, vy, vz;
   ekfGetState(x, y, z, vx, vy, vz);
 
+#if ENABLE_DATALOGGING
   logSensorData();
+#endif
 
   float roll, pitch, yaw;
   getIntegratedAngles(roll, pitch, yaw);
