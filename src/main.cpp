@@ -1,320 +1,126 @@
 #include <Arduino.h>
-#include <SPI.h>
-#include <SD.h>
 #include <Wire.h>
 #include "sensor_setup.h"
 #include "ekf_sensor_fusion.h"
 #include "orientation_estimation.h"
 #include "datalogging.h"
-#include "camera_trigger.h"
 
-enum SystemState {
-  INIT,
-  CALIBRATION,
-  ASCENT,
-  DESCENT,
-  LANDED
-};
-
-unsigned long launchDetectTimestamp = 0;
-unsigned long landingDetectTimestamp = 0;
-float ascentBufferVyMax = -9999.0f;
-float ascentBufferAyMax = -9999.0f;
-float maxAltitudeSummary = -9999.0f;
-unsigned long ascentEntryTwoSecondsBeforeLaunchIndex = 0;
-
-struct LogEntry {
-  String rawLine;
-  String filteredLine;
-};
-
-const int ASCENT_BUFFER_SIZE = 5000;
-LogEntry ascentRollingBuffer[ASCENT_BUFFER_SIZE];
-int ascentBufferIndex = 0;
-bool ascentBufferFull = false;
-
-bool ascentAccelActive = false;
-unsigned long ascentAccelStartTime = 0;
-
-bool ascentDetected = false;
-unsigned long ascentStartTime = 0;
-float maxAltitude = 0.0;
-
-bool apogeeDetected = false;
-unsigned long apogeeTimestamp = 0;
-
-float prevAltitude = 0.0;
-unsigned long landingTimerStart = 0;
-
-SystemState systemState = INIT;
-unsigned long stateStartTime = 0;
-const int LED_PIN = 36;
+const uint32_t LOOP_PERIOD_US = 5000; // 200 Hz core loop
 
 void setup() {
   Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
-  initCameraTrigger();
-  stateStartTime = millis();
+  while (!Serial) {
+    ;
+  }
+
+  setupSensors();
+  float initialAltitude = getRelativeAltitude();
+  ekfInit(0.0f, initialAltitude, 0.0f, 0.0f, 0.0f, 0.0f);
+  resetIntegratedAngles();
+  setupFiles();
+  Summarylog("Core debug loop initialized with EKF and datalogging enabled.");
 }
 
 void loop() {
-  handleCameraTrigger();
-  switch(systemState) {
+  static uint32_t lastUpdate = micros();
+  uint32_t now = micros();
+  uint32_t elapsed = now - lastUpdate;
 
-    case INIT: {
-      const unsigned long ledInterval = 500;
-      static unsigned long lastLedToggle = 0;
-      static bool ledState = false;
-      if (millis() - lastLedToggle >= ledInterval) {
-        lastLedToggle = millis();
-        ledState = !ledState;
-        analogWrite(LED_PIN, ledState ? 255 : 0);
-      }
-
-      if (millis() - stateStartTime >= 2000) {
-        Summarylog("Starting sensor setup (transition INIT->CALIBRATION)...");
-        systemState = CALIBRATION;
-        stateStartTime = millis();
-      }
-      break;
-    }
-
-    case CALIBRATION: {
-      const unsigned long ledInterval = 125;
-      static unsigned long lastLedToggle = 0;
-      static bool ledState = false;
-      if (millis() - lastLedToggle >= ledInterval) {
-        lastLedToggle = millis();
-        ledState = !ledState;
-        analogWrite(LED_PIN, ledState ? 255 : 0);
-      }
-
-      setupSensors();
-      if (millis() - stateStartTime >= 100) {
-        float alt = getRelativeAltitude();
-        ekfInit(0.0f, 0.0f, alt, 0.0f, 0.0f, 0.0f);
-        Summarylog(String("Calibration complete, Baseline Altitude: ") + alt);
-        setupFiles();
-        Summarylog("Calibration done. Transitioning to ASCENT state.");
-        ascentBufferIndex = 0;
-        ascentBufferFull = false;
-        ascentAccelActive = false;
-        ascentStartTime = 0;
-        maxAltitude = alt;
-        apogeeDetected = false;
-        systemState = ASCENT;
-        stateStartTime = millis();
-      }
-      break;
-    }
-
-  case ASCENT: {
-      const unsigned long ledInterval = 250;
-      static unsigned long lastLedToggle = 0;
-      static bool ledState = false;
-      if (millis() - lastLedToggle >= ledInterval) {
-        lastLedToggle = millis();
-        ledState = !ledState;
-        analogWrite(LED_PIN, ledState ? 255 : 0);
-      }
-
-      static unsigned long loopStartTime = micros();
-      const unsigned long loopInterval = 5000;
-      unsigned long currentTime = micros();
-      static bool ascentBufferDumped = false;
-
-      if (currentTime - loopStartTime >= loopInterval) {
-        loopStartTime = currentTime;
-        float dt = 0.005f;
-
-        float ax, ay, az, gx, gy, gz, mx, my, mz;
-        getSensorData(ax, ay, az, gx, gy, gz, mx, my, mz);
-        float relAlt = getRelativeAltitude();
-        ekfPredict(ax, ay, az, dt);
-        ekfUpdateBaro(relAlt);
-        float x, y, z, vx, vy, vz;
-        ekfGetState(x, y, z, vx, vy, vz);
-        updateIntegratedAngles(gx, gy, gz, dt);
-        float Roll, Pitch, Yaw;
-        getIntegratedAngles(Roll, Pitch, Yaw);
-
-        if (y > maxAltitude) {
-          maxAltitude = y;
-        }
-
-        if (!ascentDetected && (vy > 20.0)) {
-          ascentDetected = true;
-          ascentStartTime = millis();
-        }
-
-        launchDetectTimestamp = micros();
-
-        int indexOffset = 2 * 200;
-        int twoSecIndex = ascentBufferIndex - indexOffset;
-        if (twoSecIndex < 0) twoSecIndex += ASCENT_BUFFER_SIZE;
-        ascentEntryTwoSecondsBeforeLaunchIndex = twoSecIndex;
-
-        if (!ascentBufferDumped) {
-          unsigned long timestamp = micros();
-          String rawLine = String(timestamp) + "," +
-                           String(ax, 3) + "," + String(ay, 3) + "," + String(az, 3) + "," +
-                           String(gx, 3) + "," + String(gy, 3) + "," + String(gz, 3) + "," +
-                           String(mx, 3) + "," + String(my, 3) + "," + String(mz, 3) + "," +
-                           String(relAlt, 3);
-          String filteredLine = String(timestamp) + "," +
-                                String(x, 3) + "," + String(y, 3) + "," + String(z, 3) + "," +
-                                String(vx, 3) + "," + String(vy, 3) + "," + String(vz, 3) + "," +
-                                String(Roll, 3) + "," + String(Pitch, 3) + "," + String(Yaw, 3);
-
-          ascentRollingBuffer[ascentBufferIndex].rawLine = rawLine;
-          ascentRollingBuffer[ascentBufferIndex].filteredLine = filteredLine;
-          ascentBufferIndex = (ascentBufferIndex + 1) % ASCENT_BUFFER_SIZE;
-          if (ascentBufferIndex == 0) {
-            ascentBufferFull = true;
-          }
-
-          if (ay > 6.0) {
-            if (!ascentAccelActive) {
-              ascentAccelActive = true;
-              ascentAccelStartTime = millis();
-            } else {
-              if (millis() - ascentAccelStartTime >= 600) {
-                Summarylog("LAUNCH DETECTED; dumping rolling buffer to SD.");
-                int count = (ascentBufferFull ? ASCENT_BUFFER_SIZE : ascentBufferIndex);
-                for (int i = 0; i < count; i++) {
-                  rawDataFile.println(ascentRollingBuffer[i].rawLine);
-                  filteredDataFile.println(ascentRollingBuffer[i].filteredLine);
-                }
-                rawDataFile.flush();
-                filteredDataFile.flush();
-                ascentBufferDumped = true;
-                ascentBufferIndex = 0;
-                ascentBufferFull = false;
-                ascentAccelActive = false;
-              }
-            }
-          } else {
-            ascentAccelActive = false;
-          }
-        } else {
-          logSensorData();
-        }
-        if (vy > ascentBufferVyMax) ascentBufferVyMax = vy;
-        if (ay > ascentBufferAyMax) ascentBufferAyMax = ay;
-        if (y > maxAltitudeSummary) maxAltitudeSummary = y;
-
-        if (!apogeeDetected && ascentDetected) {
-          if ((millis() - ascentStartTime >= 1000) &&
-              (vy < -5.0) &&
-              (maxAltitude > 10.0) &&
-              (y < maxAltitude)) {
-            apogeeDetected = true;
-            apogeeTimestamp = millis();
-            Summarylog("APOGEE DETECTED.");
-            systemState = DESCENT;
-            stateStartTime = millis();
-          }
-        }
-      }
-      break;
-    }
-
-    case DESCENT: {
-      const unsigned long ledInterval = 250;
-      static unsigned long lastLedToggle = 0;
-      static bool ledState = false;
-      if (millis() - lastLedToggle >= ledInterval) {
-        lastLedToggle = millis();
-        ledState = !ledState;
-        analogWrite(LED_PIN, ledState ? 255 : 0);
-      }
-
-      static unsigned long loopStartTime = micros();
-      const unsigned long loopInterval = 1000;
-      unsigned long currentTime = micros();
-      if (currentTime - loopStartTime >= loopInterval) {
-        loopStartTime = currentTime;
-        float dt = 0.001f;
-
-        float ax, ay, az, gx, gy, gz, mx, my, mz;
-        getSensorData(ax, ay, az, gx, gy, gz, mx, my, mz);
-        float relAlt = getRelativeAltitude();
-        ekfPredict(ax, ay, az, dt);
-        ekfUpdateBaro(relAlt);
-        float x, y, z, vx, vy, vz;
-        ekfGetState(x, y, z, vx, vy, vz);
-        updateIntegratedAngles(gx, gy, gz, dt);
-        float Roll, Pitch, Yaw;
-        getIntegratedAngles(Roll, Pitch, Yaw);
-
-        static unsigned long lastLogTime = 0;
-        if ((millis() - apogeeTimestamp < 5000) &&
-            (fabs(vy) <= 20.0)) {
-          if (millis() - lastLogTime >= 100) {
-            logSensorData();
-            lastLogTime = millis();
-          }
-        } else {
-          logSensorData();
-        }
-
-        static float prevAltitude = y;
-        static unsigned long landingTimerStart = millis();
-        if ((fabs(y - prevAltitude) < 1.0) &&
-            (fabs(relAlt - prevAltitude) < 1.0)) {
-          if (millis() - landingTimerStart >= 5000) {
-            Summarylog("Landing detected; transitioning to LANDED state.");
-            systemState = LANDED;
-            stateStartTime = millis();
-            landingDetectTimestamp = millis();
-
-          }
-        } else {
-          landingTimerStart = millis();
-          prevAltitude = y;
-        }
-
-        Serial.print(">");
-        Serial.print("altitude:"); Serial.print(y, 3);
-        Serial.print(",vy:"); Serial.print(vy, 3);
-        Serial.print(",roll:"); Serial.print(Roll, 3);
-        Serial.print(",pitch:"); Serial.print(Pitch, 3);
-        Serial.print(",yaw:"); Serial.print(Yaw, 3);
-        Serial.print(",ay:"); Serial.print(ay, 3);
-        Serial.println();
-      }
-      break;
-    }
-
-    case LANDED: {
-      const unsigned long ledInterval = 500;
-      static unsigned long lastLedToggle = 0;
-      static bool ledState = false;
-      if (millis() - lastLedToggle >= ledInterval) {
-        lastLedToggle = millis();
-        ledState = !ledState;
-        analogWrite(LED_PIN, ledState ? 255 : 0);
-      }
-      logFilteredData();
-      flushAllBuffers();
-      Summarylog("Flight ended. Logging stopped.");
-      Summarylog("========== FLIGHT SUMMARY ==========");
-      Summarylog("Launch detected at: " + String(launchDetectTimestamp) + " \xC2\xB5s");
-      String prelaunchLine = ascentRollingBuffer[ascentEntryTwoSecondsBeforeLaunchIndex].filteredLine;
-      Summarylog("Entry 2s before launch: " + prelaunchLine);
-      float apogeeTimeSec = (float)(apogeeTimestamp - launchDetectTimestamp) / 1000.0f;
-      Summarylog("Apogee detected at: " + String(apogeeTimeSec, 2) + " s after launch");
-      unsigned long landingTimeCorrected = landingDetectTimestamp - 5000;
-      Summarylog("Landing detected at: " + String(landingTimeCorrected) + " ms");
-      Summarylog("Max upward velocity (vy): " + String(ascentBufferVyMax, 3) + " m/s");
-      Summarylog("Max upward acceleration (ay): " + String(ascentBufferAyMax, 3) + " m/s\xC2\xB2");
-      Summarylog("Max altitude: " + String(maxAltitudeSummary, 3) + " m");
-      Summarylog("====================================");
-
-      while (1) {
-      }
-      break;
-    }
+  if (elapsed < LOOP_PERIOD_US) {
+    return;
   }
-}
 
+  lastUpdate = now;
+  float dt = elapsed / 1e6f;
+
+  float bnoAx, bnoAy, bnoAz, bnoGx, bnoGy, bnoGz, bnoMx, bnoMy, bnoMz;
+  getSensorData(bnoAx, bnoAy, bnoAz, bnoGx, bnoGy, bnoGz, bnoMx, bnoMy, bnoMz);
+
+  float bmxAx = 0.0f, bmxAy = 0.0f, bmxAz = 0.0f;
+  float bmxGx = 0.0f, bmxGy = 0.0f, bmxGz = 0.0f;
+  float bmxMx = 0.0f, bmxMy = 0.0f, bmxMz = 0.0f;
+  bool bmxOk = getBMXSensorData(bmxAx, bmxAy, bmxAz, bmxGx, bmxGy, bmxGz, bmxMx, bmxMy, bmxMz);
+
+  float ax = bmxOk ? bmxAx : bnoAx;
+  float ay = bmxOk ? bmxAy : bnoAy;
+  float az = bmxOk ? bmxAz : bnoAz;
+  float gx = bmxOk ? bmxGx : bnoGx;
+  float gy = bmxOk ? bmxGy : bnoGy;
+  float gz = bmxOk ? bmxGz : bnoGz;
+  float mx = bmxOk ? bmxMx : bnoMx;
+  float my = bmxOk ? bmxMy : bnoMy;
+  float mz = bmxOk ? bmxMz : bnoMz;
+  float relAlt = getRelativeAltitude();
+
+  ekfPredict(ax, ay, az, dt);
+  ekfUpdateBaro(relAlt);
+
+  updateIntegratedAngles(gx, gy, gz, dt);
+
+  float x, y, z, vx, vy, vz;
+  ekfGetState(x, y, z, vx, vy, vz);
+
+  logSensorData();
+
+  float roll, pitch, yaw;
+  getIntegratedAngles(roll, pitch, yaw);
+
+  Serial.print(">alt_fused:");
+  Serial.print(y, 3);
+  Serial.print(",vel_fused:");
+  Serial.print(vy, 3);
+  Serial.print(",alt_raw:");
+  Serial.print(relAlt, 3);
+  Serial.print(",ax:");
+  Serial.print(ax, 3);
+  Serial.print(",ay:");
+  Serial.print(ay, 3);
+  Serial.print(",az:");
+  Serial.print(az, 3);
+  Serial.print(",roll:");
+  Serial.print(roll, 3);
+  Serial.print(",pitch:");
+  Serial.print(pitch, 3);
+  Serial.print(",yaw:");
+  Serial.print(yaw, 3);
+  Serial.print(",bno_ax:");
+  Serial.print(bnoAx, 3);
+  Serial.print(",bno_ay:");
+  Serial.print(bnoAy, 3);
+  Serial.print(",bno_az:");
+  Serial.print(bnoAz, 3);
+  Serial.print(",bno_gx:");
+  Serial.print(bnoGx, 3);
+  Serial.print(",bno_gy:");
+  Serial.print(bnoGy, 3);
+  Serial.print(",bno_gz:");
+  Serial.print(bnoGz, 3);
+  Serial.print(",bno_mx:");
+  Serial.print(bnoMx, 3);
+  Serial.print(",bno_my:");
+  Serial.print(bnoMy, 3);
+  Serial.print(",bno_mz:");
+  Serial.print(bnoMz, 3);
+
+  if (bmxOk) {
+    Serial.print(",bmx_ax:");
+    Serial.print(bmxAx, 3);
+    Serial.print(",bmx_ay:");
+    Serial.print(bmxAy, 3);
+    Serial.print(",bmx_az:");
+    Serial.print(bmxAz, 3);
+    Serial.print(",bmx_gx:");
+    Serial.print(bmxGx, 3);
+    Serial.print(",bmx_gy:");
+    Serial.print(bmxGy, 3);
+    Serial.print(",bmx_gz:");
+    Serial.print(bmxGz, 3);
+    Serial.print(",bmx_mx:");
+    Serial.print(bmxMx, 3);
+    Serial.print(",bmx_my:");
+    Serial.print(bmxMy, 3);
+    Serial.print(",bmx_mz:");
+    Serial.print(bmxMz, 3);
+  }
+  Serial.print("\r\n");
+}

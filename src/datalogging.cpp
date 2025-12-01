@@ -82,7 +82,7 @@ void setupFiles()
   }
 
   if (rawDataFile) {
-    rawDataFile.println("timestamp,ax,ay,az,gx,gy,gz,mx,my,mz,baroAlt");
+    rawDataFile.println("timestamp,bno_ax,bno_ay,bno_az,bno_gx,bno_gy,bno_gz,bno_mx,bno_my,bno_mz,bmx_ax,bmx_ay,bmx_az,bmx_gx,bmx_gy,bmx_gz,bmx_mx,bmx_my,bmx_mz,baroAlt,rawPressure,rawTemperature,bnoRoll,bnoPitch,bnoYaw,kalmanHex");
     rawDataFile.flush();
   }
   if (filteredDataFile) {
@@ -96,6 +96,8 @@ void logRawData()
 {
   float ax, ay, az, gx, gy, gz, mx, my, mz;
   getSensorData(ax, ay, az, gx, gy, gz, mx, my, mz);
+  float bmxAx, bmxAy, bmxAz, bmxGx, bmxGy, bmxGz, bmxMx, bmxMy, bmxMz;
+  bool bmxOk = getBMXSensorData(bmxAx, bmxAy, bmxAz, bmxGx, bmxGy, bmxGz, bmxMx, bmxMy, bmxMz);
 
   bmp.performReading();
   float baroAlt = getRelativeAltitude();
@@ -124,11 +126,18 @@ void logRawData()
 
   String kalmanHex = serializeMatrixHex(lastKalmanGain);
 
+  auto formatBmx = [&](float value) -> String {
+    return bmxOk ? String(value, 3) : String("nan");
+  };
+
   unsigned long timestamp = micros();
   String line = String(timestamp) + "," +
                 String(ax, 3) + "," + String(ay, 3) + "," + String(az, 3) + "," +
                 String(gx, 3) + "," + String(gy, 3) + "," + String(gz, 3) + "," +
                 String(mx, 3) + "," + String(my, 3) + "," + String(mz, 3) + "," +
+                formatBmx(bmxAx) + "," + formatBmx(bmxAy) + "," + formatBmx(bmxAz) + "," +
+                formatBmx(bmxGx) + "," + formatBmx(bmxGy) + "," + formatBmx(bmxGz) + "," +
+                formatBmx(bmxMx) + "," + formatBmx(bmxMy) + "," + formatBmx(bmxMz) + "," +
                 String(baroAlt, 3) + "," +
                 String(rawPressure, 2) + "," + String(rawTemperature, 2) + "," +
                 String(bnoRoll, 2) + "," + String(bnoPitch, 2) + "," + String(bnoYaw, 2) + "," +
