@@ -1,19 +1,23 @@
 #include "sensor_setup.h"
 #include "BNO_LUT.h"
 #include "datalogging.h"
-#include "camera_trigger.h"
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 #include <Adafruit_BMP3XX.h>
+#include <DFRobot_BMX160.h>
 #include <Wire.h>
 
-Adafruit_BNO055 bno = Adafruit_BNO055(55);
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 Adafruit_BMP3XX bmp;
+DFRobot_BMX160 bmx160(&Wire1);
 
 float baselineAltitude = 0.0f;
 float altitudeBias = 0.0f;
+bool bmxInitialized = false;
 
 void setupSensors() {
+  Wire1.begin();
+
   if (!bno.begin()) {
     Serial.println("BNO055 initialization failed!");
     Summarylog("ERROR: BNO055 initialization failed!");
@@ -26,6 +30,17 @@ void setupSensors() {
   bno.setSensorOffsets(BNO_CALIBRATION_OFFSETS);
   Serial.println("BNO055 calibration offsets applied.");
   Summarylog("BNO055 calibration offsets applied.");
+
+  if (!bmx160.begin()) {
+    Serial.println("BMX160 initialization failed!");
+    Summarylog("ERROR: BMX160 initialization failed!");
+  } else {
+    bmxInitialized = true;
+    bmx160.setGyroRange(bmx160.eGyroRange_2000DPS);
+    bmx160.setAccelRange(bmx160.eAccelRange_16G);
+    Serial.println("BMX160 initialized successfully.");
+    Summarylog("BMX160 initialized successfully.");
+  }
 
   if (!bmp.begin_I2C(0x76, &Wire1)) {
     Serial.println("BMP388 initialization failed!");
@@ -60,7 +75,6 @@ float manualCalibrateBMP388() {
   const int numSamples = 1000;
   float totalAltitude = 0.0f;
   for (int i = 0; i < numSamples; i++) {
-    handleCameraTrigger();
     if (bmp.performReading()) {
       float currentAltitude = bmp.readAltitude(1013.25);
       totalAltitude += currentAltitude;
@@ -117,8 +131,8 @@ void getCorrectedIMUData(float &yaw, float &pitch, float &roll,
   mz = magEvent.magnetic.z;
 }
 
-void getSensorData(float &ax, float &ay, float &az, 
-                   float &gx, float &gy, float &gz, 
+void getSensorData(float &ax, float &ay, float &az,
+                   float &gx, float &gy, float &gz,
                    float &mx, float &my, float &mz) {
   sensors_event_t accelEvent, gyroEvent, magEvent;
   bno.getEvent(&accelEvent, Adafruit_BNO055::VECTOR_ACCELEROMETER);
@@ -133,5 +147,32 @@ void getSensorData(float &ax, float &ay, float &az,
   mx = magEvent.magnetic.x;
   my = magEvent.magnetic.y;
   mz = magEvent.magnetic.z;
+}
+
+bool getBMXSensorData(float &ax, float &ay, float &az,
+                      float &gx, float &gy, float &gz,
+                      float &mx, float &my, float &mz) {
+  if (!bmxInitialized) {
+    return false;
+  }
+
+  sBmx160SensorData_t magData, gyroData, accelData;
+  bmx160.getAllData(&magData, &gyroData, &accelData);
+
+  ax = accelData.x;
+  ay = accelData.y;
+  az = accelData.z;
+  gx = gyroData.x;
+  gy = gyroData.y;
+  gz = gyroData.z;
+  mx = magData.x;
+  my = magData.y;
+  mz = magData.z;
+
+  return true;
+}
+
+bool isBMX160Ready() {
+  return bmxInitialized;
 }
 
