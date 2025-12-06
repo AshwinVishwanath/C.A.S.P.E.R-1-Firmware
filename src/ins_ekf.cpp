@@ -1,4 +1,6 @@
 #include "ins_ekf.h"
+
+#include <cstddef>
 #include <math.h>
 
 static const float GRAVITY = 9.80665f;
@@ -8,13 +10,6 @@ static void zeroMatrix(float *M, int rows, int cols) {
     for (int c = 0; c < cols; ++c) {
       M[r * cols + c] = 0.0f;
     }
-  }
-}
-
-static void identityMatrix(float *M, int n) {
-  zeroMatrix(M, n, n);
-  for (int i = 0; i < n; ++i) {
-    M[i * n + i] = 1.0f;
   }
 }
 
@@ -28,7 +23,6 @@ static void copyMatrix(const float *A, float *B, int rows, int cols) {
 
 static void matMul(const float *A, const float *B, float *C, int m, int n,
                    int p) {
-  // C = A(mxn) * B(nxp)
   for (int i = 0; i < m; ++i) {
     for (int j = 0; j < p; ++j) {
       float sum = 0.0f;
@@ -45,15 +39,6 @@ static void matAdd(const float *A, const float *B, float *C, int rows,
   for (int r = 0; r < rows; ++r) {
     for (int c = 0; c < cols; ++c) {
       C[r * cols + c] = A[r * cols + c] + B[r * cols + c];
-    }
-  }
-}
-
-static void matSub(const float *A, const float *B, float *C, int rows,
-                   int cols) {
-  for (int r = 0; r < rows; ++r) {
-    for (int c = 0; c < cols; ++c) {
-      C[r * cols + c] = A[r * cols + c] - B[r * cols + c];
     }
   }
 }
@@ -160,6 +145,72 @@ static void addVector(float *dst, const float *src, int n) {
   }
 }
 
+template <size_t N>
+void resetCovarianceMatrix(float (&P)[N][N]) {
+  zeroMatrix(&P[0][0], static_cast<int>(N), static_cast<int>(N));
+  for (size_t i = 0U; i < N; ++i) {
+    P[i][i] = 1e-3f;
+  }
+}
+
+template <size_t N>
+void propagateCovarianceMatrix(float (&P)[N][N], const float (&Q)[N][N],
+                               const float (&Fc)[N][N], float dt) {
+  float Fk[N][N];
+  zeroMatrix(&Fk[0][0], static_cast<int>(N), static_cast<int>(N));
+  for (size_t i = 0U; i < N; ++i) {
+    Fk[i][i] = 1.0f + Fc[i][i] * dt;
+    for (size_t j = 0U; j < N; ++j) {
+      if (i != j) {
+        Fk[i][j] += Fc[i][j] * dt;
+      }
+    }
+  }
+
+  float FP[N][N];
+  matMul(&Fk[0][0], &P[0][0], &FP[0][0], static_cast<int>(N),
+         static_cast<int>(N), static_cast<int>(N));
+
+  float FkT[N][N];
+  matTrans(&Fk[0][0], &FkT[0][0], static_cast<int>(N), static_cast<int>(N));
+
+  float FPFt[N][N];
+  matMul(&FP[0][0], &FkT[0][0], &FPFt[0][0], static_cast<int>(N),
+         static_cast<int>(N), static_cast<int>(N));
+
+  matAdd(&FPFt[0][0], &Q[0][0], &P[0][0], static_cast<int>(N),
+         static_cast<int>(N));
+}
+
+template <size_t N>
+void applyBaroUpdate(float (&P)[N][N], const float (&R)[1][1], float innovation,
+                     float (&dxOut)[N]) {
+  float S = P[1][1] + R[0][0];
+  float gainVec[N];
+  for (size_t i = 0U; i < N; ++i) {
+    gainVec[i] = P[i][1] / S;
+    dxOut[i] = gainVec[i] * innovation;
+  }
+
+  float KH[N][N] = {};
+  for (size_t r = 0U; r < N; ++r) {
+    KH[r][1] = gainVec[r];
+  }
+
+  float IminusKH[N][N];
+  for (size_t r = 0U; r < N; ++r) {
+    for (size_t c = 0U; c < N; ++c) {
+      float val = (r == c) ? 1.0f : 0.0f;
+      IminusKH[r][c] = val - KH[r][c];
+    }
+  }
+
+  float temp[N][N];
+  matMul(&IminusKH[0][0], &P[0][0], &temp[0][0], static_cast<int>(N),
+         static_cast<int>(N), static_cast<int>(N));
+  copyMatrix(&temp[0][0], &P[0][0], static_cast<int>(N), static_cast<int>(N));
+}
+
 // ----------------------------------------------------------
 // INSEKF12 implementation
 // ----------------------------------------------------------
@@ -193,10 +244,7 @@ void INSEKF12::initialize(const float *p0, const float *v0, const float *q0,
 void INSEKF12::setDt(float dtSeconds) { dt = dtSeconds; }
 
 void INSEKF12::resetCovariance() {
-  zeroMatrix(&P[0][0], N, N);
-  for (int i = 0; i < N; ++i) {
-    P[i][i] = 1e-3f;
-  }
+  resetCovarianceMatrix(P);
 }
 
 void INSEKF12::setProcessNoiseFromSensors() {
@@ -273,28 +321,8 @@ void INSEKF12::buildFc(const float *a_corr, const float *w_corr,
   }
 }
 
-void INSEKF12::propagateCovariance(const float Fc[N][N]) {
-  float Fk[N][N];
-  zeroMatrix(&Fk[0][0], N, N);
-  for (int i = 0; i < N; ++i) {
-    Fk[i][i] = 1.0f + Fc[i][i] * dt;
-    for (int j = 0; j < N; ++j) {
-      if (i != j) {
-        Fk[i][j] += Fc[i][j] * dt;
-      }
-    }
-  }
-
-  float FP[N][N];
-  matMul(&Fk[0][0], &P[0][0], &FP[0][0], N, N, N);
-
-  float FkT[N][N];
-  matTrans(&Fk[0][0], &FkT[0][0], N, N);
-
-  float FPFt[N][N];
-  matMul(&FP[0][0], &FkT[0][0], &FPFt[0][0], N, N, N);
-
-  matAdd(&FPFt[0][0], &Q[0][0], &P[0][0], N, N);
+void INSEKF12::propagateCovariance(const float (&Fc)[N][N]) {
+  propagateCovarianceMatrix(P, Q, Fc, dt);
 }
 
 void INSEKF12::injectErrorState(const float *dx) {
@@ -334,47 +362,10 @@ void INSEKF12::predict(const float *a_m, const float *w_m) {
 }
 
 void INSEKF12::updateBaro(float z_baro) {
-  // H = [0 1 0 0 ...]
-  float H[1][N];
-  zeroMatrix(&H[0][0], 1, N);
-  H[0][1] = 1.0f;
-
-  float PHt[N];
-  for (int r = 0; r < N; ++r) {
-    PHt[r] = P[r][1];
-  }
-
-  float S = P[1][1] + R[0][0];
-  float K[N];
-  for (int i = 0; i < N; ++i) {
-    K[i] = PHt[i] / S;
-  }
-
   float innovation = z_baro - p_nom[1];
   float dx[N];
-  for (int i = 0; i < N; ++i) {
-    dx[i] = K[i] * innovation;
-  }
+  applyBaroUpdate(P, R, innovation, dx);
   injectErrorState(dx);
-
-  // P = (I-KH)P
-  float KH[N][N];
-  zeroMatrix(&KH[0][0], N, N);
-  for (int r = 0; r < N; ++r) {
-    KH[r][1] = K[r];
-  }
-
-  float IminusKH[N][N];
-  for (int r = 0; r < N; ++r) {
-    for (int c = 0; c < N; ++c) {
-      float val = (r == c) ? 1.0f : 0.0f;
-      IminusKH[r][c] = val - KH[r][c];
-    }
-  }
-
-  float temp[N][N];
-  matMul(&IminusKH[0][0], &P[0][0], &temp[0][0], N, N, N);
-  copyMatrix(&temp[0][0], &P[0][0], N, N);
 }
 
 // ----------------------------------------------------------
@@ -410,10 +401,7 @@ void INSEKF15::initialize(const float *p0, const float *v0, const float *q0,
 void INSEKF15::setDt(float dtSeconds) { dt = dtSeconds; }
 
 void INSEKF15::resetCovariance() {
-  zeroMatrix(&P[0][0], N, N);
-  for (int i = 0; i < N; ++i) {
-    P[i][i] = 1e-3f;
-  }
+  resetCovarianceMatrix(P);
 }
 
 void INSEKF15::setProcessNoiseFromSensors() {
@@ -493,28 +481,8 @@ void INSEKF15::buildFc(const float *a_corr, const float *w_corr,
   }
 }
 
-void INSEKF15::propagateCovariance(const float Fc[N][N]) {
-  float Fk[N][N];
-  zeroMatrix(&Fk[0][0], N, N);
-  for (int i = 0; i < N; ++i) {
-    Fk[i][i] = 1.0f + Fc[i][i] * dt;
-    for (int j = 0; j < N; ++j) {
-      if (i != j) {
-        Fk[i][j] += Fc[i][j] * dt;
-      }
-    }
-  }
-
-  float FP[N][N];
-  matMul(&Fk[0][0], &P[0][0], &FP[0][0], N, N, N);
-
-  float FkT[N][N];
-  matTrans(&Fk[0][0], &FkT[0][0], N, N);
-
-  float FPFt[N][N];
-  matMul(&FP[0][0], &FkT[0][0], &FPFt[0][0], N, N, N);
-
-  matAdd(&FPFt[0][0], &Q[0][0], &P[0][0], N, N);
+void INSEKF15::propagateCovariance(const float (&Fc)[N][N]) {
+  propagateCovarianceMatrix(P, Q, Fc, dt);
 }
 
 void INSEKF15::injectErrorState(const float *dx) {
@@ -556,44 +524,8 @@ void INSEKF15::predict(const float *a_m, const float *w_m) {
 
 void INSEKF15::updateBaro(float z_baro) {
   float innovation = z_baro - p_nom[1];
-
-  float H[1][N];
-  zeroMatrix(&H[0][0], 1, N);
-  H[0][1] = 1.0f;
-
-  float PHt[N];
-  for (int r = 0; r < N; ++r) {
-    PHt[r] = P[r][1];
-  }
-
-  float S = P[1][1] + R[0][0];
-  float K[N];
-  for (int i = 0; i < N; ++i) {
-    K[i] = PHt[i] / S;
-  }
-
   float dx[N];
-  for (int i = 0; i < N; ++i) {
-    dx[i] = K[i] * innovation;
-  }
+  applyBaroUpdate(P, R, innovation, dx);
   injectErrorState(dx);
-
-  float KH[N][N];
-  zeroMatrix(&KH[0][0], N, N);
-  for (int r = 0; r < N; ++r) {
-    KH[r][1] = K[r];
-  }
-
-  float IminusKH[N][N];
-  for (int r = 0; r < N; ++r) {
-    for (int c = 0; c < N; ++c) {
-      float val = (r == c) ? 1.0f : 0.0f;
-      IminusKH[r][c] = val - KH[r][c];
-    }
-  }
-
-  float temp[N][N];
-  matMul(&IminusKH[0][0], &P[0][0], &temp[0][0], N, N, N);
-  copyMatrix(&temp[0][0], &P[0][0], N, N);
 }
 

@@ -78,7 +78,7 @@ private:
 
   void resetCovariance();
   void buildFc(const float *a_corr, const float *w_corr, float Fc[N][N]) const;
-  void propagateCovariance(const float Fc[N][N]);
+  void propagateCovariance(const float (&Fc)[N][N]);
   void injectErrorState(const float *dx);
 };
 
@@ -116,7 +116,7 @@ private:
 
   void resetCovariance();
   void buildFc(const float *a_corr, const float *w_corr, float Fc[N][N]) const;
-  void propagateCovariance(const float Fc[N][N]);
+  void propagateCovariance(const float (&Fc)[N][N]);
   void injectErrorState(const float *dx);
 };
 
