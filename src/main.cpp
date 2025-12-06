@@ -138,7 +138,9 @@ void loop() {
     return;
   }
 
-  float gyro_rad[3] = {gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD};
+  float gyro_rad[3] = {static_cast<float>(gx * RADS_PER_DEG),
+                       static_cast<float>(gy * RADS_PER_DEG),
+                       static_cast<float>(gz * RADS_PER_DEG)};
   float accel_mps2[3] = {ax, ay, az};
 
   ekf12.predict(accel_mps2, gyro_rad);
