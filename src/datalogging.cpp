@@ -1,9 +1,10 @@
+#include <Arduino.h>
+#include <SD.h>
+#include <SPI.h>
+
 #include "ekf_sensor_fusion.h"
 #include "orientation_estimation.h"
 #include "sensor_setup.h"
-#include <SD.h>
-#include <SPI.h>
-#include <Arduino.h>
 
 File rawDataFile;
 File filteredDataFile;
