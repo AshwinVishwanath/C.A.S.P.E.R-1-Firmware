@@ -1,7 +1,8 @@
 #include <Arduino.h>
-#include "sensor_setup.h"
 #include <ArduinoEigen.h>
 #include <math.h>
+
+#include "sensor_setup.h"
 
 static const int n_x = 6;
 static const int n_z = 1;

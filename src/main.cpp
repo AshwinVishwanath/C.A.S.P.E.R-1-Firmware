@@ -1,12 +1,93 @@
 #include <Arduino.h>
-#include <Wire.h>
+#include <math.h>
+
 #include "ins_ekf.h"
 #include "sensor_setup.h"
 
 // Core loop at 200 Hz (5 ms)
-static const uint32_t LOOP_PERIOD_US = 5000;
-static const float DT_SEC = 0.005f;
-static const float DEG_TO_RAD = 0.017453292519943295f;
+namespace {
+constexpr uint32_t LOOP_PERIOD_US = 5000U;
+constexpr float DT_SEC = 0.005f;
+constexpr float RADS_PER_DEG = 0.017453292519943295f;
+constexpr uint8_t PLOT_PRECISION = 4U;
+
+void quaternionToEuler(const float *q, float &roll, float &pitch, float &yaw) {
+  const float sinr_cosp = 2.0f * (q[0] * q[1] + q[2] * q[3]);
+  const float cosr_cosp = 1.0f - 2.0f * (q[1] * q[1] + q[2] * q[2]);
+  roll = atan2f(sinr_cosp, cosr_cosp);
+
+  const float sinp = 2.0f * (q[0] * q[2] - q[3] * q[1]);
+  if (fabsf(sinp) >= 1.0f) {
+    pitch = copysignf(PI / 2.0f, sinp);
+  } else {
+    pitch = asinf(sinp);
+  }
+
+  const float siny_cosp = 2.0f * (q[0] * q[3] + q[1] * q[2]);
+  const float cosy_cosp = 1.0f - 2.0f * (q[2] * q[2] + q[3] * q[3]);
+  yaw = atan2f(siny_cosp, cosy_cosp);
+}
+
+void emitPlotLine(const INSEKF15 &ekf) {
+  const float *position = ekf.position();
+  const float *velocity = ekf.velocity();
+  const float *quat = ekf.quaternion();
+
+  float roll = 0.0f;
+  float pitch = 0.0f;
+  float yaw = 0.0f;
+  quaternionToEuler(quat, roll, pitch, yaw);
+
+  Serial.print('>');
+  Serial.print("roll:");
+  Serial.print(roll, PLOT_PRECISION);
+  Serial.print(",pitch:");
+  Serial.print(pitch, PLOT_PRECISION);
+  Serial.print(",yaw:");
+  Serial.print(yaw, PLOT_PRECISION);
+  Serial.print(",p_x:");
+  Serial.print(position[0], PLOT_PRECISION);
+  Serial.print(",p_y:");
+  Serial.print(position[1], PLOT_PRECISION);
+  Serial.print(",p_z:");
+  Serial.print(position[2], PLOT_PRECISION);
+  Serial.print(",v_x:");
+  Serial.print(velocity[0], PLOT_PRECISION);
+  Serial.print(",v_y:");
+  Serial.print(velocity[1], PLOT_PRECISION);
+  Serial.print(",v_z:");
+  Serial.print(velocity[2], PLOT_PRECISION);
+  Serial.print("\r\n");
+}
+
+void logEkfStatus(const INSEKF15 &ekf, float relAlt) {
+  const float *p = ekf.position();
+  const float *v = ekf.velocity();
+  const float *q = ekf.quaternion();
+  Serial.print("EKF15 p[m]: ");
+  Serial.print(p[0], 3);
+  Serial.print(", ");
+  Serial.print(p[1], 3);
+  Serial.print(", ");
+  Serial.print(p[2], 3);
+  Serial.print(" | v[m/s]: ");
+  Serial.print(v[0], 3);
+  Serial.print(", ");
+  Serial.print(v[1], 3);
+  Serial.print(", ");
+  Serial.print(v[2], 3);
+  Serial.print(" | q: ");
+  Serial.print(q[0], 4);
+  Serial.print(", ");
+  Serial.print(q[1], 4);
+  Serial.print(", ");
+  Serial.print(q[2], 4);
+  Serial.print(", ");
+  Serial.print(q[3], 4);
+  Serial.print(" | alt: ");
+  Serial.println(relAlt, 3);
+}
+} // namespace
 
 INSEKF12 ekf12;
 INSEKF15 ekf15;
@@ -57,7 +138,9 @@ void loop() {
     return;
   }
 
-  float gyro_rad[3] = {gx * DEG_TO_RAD, gy * DEG_TO_RAD, gz * DEG_TO_RAD};
+  float gyro_rad[3] = {static_cast<float>(gx * RADS_PER_DEG),
+                       static_cast<float>(gy * RADS_PER_DEG),
+                       static_cast<float>(gz * RADS_PER_DEG)};
   float accel_mps2[3] = {ax, ay, az};
 
   ekf12.predict(accel_mps2, gyro_rad);
@@ -67,23 +150,11 @@ void loop() {
   ekf12.updateBaro(relAlt);
   ekf15.updateBaro(relAlt);
 
+  emitPlotLine(ekf15);
+
   static uint32_t logCounter = 0;
   if ((logCounter++ % 20U) == 0U) { // 10 Hz logging
-    const float *p = ekf15.position();
-    const float *v = ekf15.velocity();
-    const float *q = ekf15.quaternion();
-    Serial.print("EKF15 p[m]: ");
-    Serial.print(p[0], 3); Serial.print(", ");
-    Serial.print(p[1], 3); Serial.print(", ");
-    Serial.print(p[2], 3); Serial.print(" | v[m/s]: ");
-    Serial.print(v[0], 3); Serial.print(", ");
-    Serial.print(v[1], 3); Serial.print(", ");
-    Serial.print(v[2], 3); Serial.print(" | q: ");
-    Serial.print(q[0], 4); Serial.print(", ");
-    Serial.print(q[1], 4); Serial.print(", ");
-    Serial.print(q[2], 4); Serial.print(", ");
-    Serial.print(q[3], 4); Serial.print(" | alt: ");
-    Serial.println(relAlt, 3);
+    logEkfStatus(ekf15, relAlt);
   }
 }
 
