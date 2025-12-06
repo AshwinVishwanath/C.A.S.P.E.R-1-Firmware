@@ -8,7 +8,7 @@
 namespace {
 constexpr uint32_t LOOP_PERIOD_US = 5000U;
 constexpr float DT_SEC = 0.005f;
-constexpr float RADS_PER_DEG = 0.017453292519943295f;
+constexpr float DEG_TO_RAD = 0.017453292519943295f;
 constexpr uint8_t PLOT_PRECISION = 4U;
 
 void quaternionToEuler(const float *q, float &roll, float &pitch, float &yaw) {

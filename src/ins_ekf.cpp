@@ -321,7 +321,7 @@ void INSEKF12::buildFc(const float *a_corr, const float *w_corr,
   }
 }
 
-void INSEKF12::propagateCovariance(const float (&Fc)[N][N]) {
+void INSEKF12::propagateCovariance(const float Fc[N][N]) {
   propagateCovarianceMatrix(P, Q, Fc, dt);
 }
 
