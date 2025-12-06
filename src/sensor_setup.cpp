@@ -36,8 +36,6 @@ void setupSensors() {
     Summarylog("ERROR: BMX160 initialization failed!");
   } else {
     bmxInitialized = true;
-    bmx160.setGyroRange(bmx160.eGyroRange_2000DPS);
-    bmx160.setAccelRange(bmx160.eAccelRange_16G);
     Serial.println("BMX160 initialized successfully.");
     Summarylog("BMX160 initialized successfully.");
   }
