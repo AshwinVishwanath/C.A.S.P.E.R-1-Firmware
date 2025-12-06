@@ -27,9 +27,9 @@ void setupSensors() {
   Summarylog("BNO055 initialized successfully.");
   Summarylog("BNO External Crystal = True");
   bno.setExtCrystalUse(true);
-  bno.setSensorOffsets(BNO_CALIBRATION_OFFSETS);
-  Serial.println("BNO055 calibration offsets applied.");
-  Summarylog("BNO055 calibration offsets applied.");
+  // bno.setSensorOffsets(BNO_CALIBRATION_OFFSETS);
+  // Serial.println("BNO055 calibration offsets applied.");
+  // Summarylog("BNO055 calibration offsets applied.");
 
   if (!bmx160.begin()) {
     Serial.println("BMX160 initialization failed!");
@@ -55,10 +55,10 @@ void setupSensors() {
   bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_DISABLE);
   bmp.setOutputDataRate(BMP3_ODR_200_HZ);
 
-  altitudeBias = manualCalibrateBMP388();
-  Serial.print("Manual calibration complete. Altitude bias: ");
-  Serial.println(altitudeBias, 3);
-  Summarylog(String("Manual calibration complete. Altitude bias: ")+ altitudeBias);
+  // altitudeBias = manualCalibrateBMP388();
+  // Serial.print("Manual calibration complete. Altitude bias: ");
+  // Serial.println(altitudeBias, 3);
+  // Summarylog(String("Manual calibration complete. Altitude bias: ")+ altitudeBias);
 
   if (bmp.performReading()) {
     baselineAltitude = bmp.readAltitude(1013.25) - altitudeBias;
