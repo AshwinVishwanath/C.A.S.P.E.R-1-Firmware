@@ -8,7 +8,6 @@
 namespace {
 constexpr uint32_t LOOP_PERIOD_US = 5000U;
 constexpr float DT_SEC = 0.005f;
-constexpr float DEG_TO_RAD = 0.017453292519943295f;
 constexpr uint8_t PLOT_PRECISION = 4U;
 
 void quaternionToEuler(const float *q, float &roll, float &pitch, float &yaw) {
@@ -138,9 +137,9 @@ void loop() {
     return;
   }
 
-  float gyro_rad[3] = {static_cast<float>(gx * RADS_PER_DEG),
-                       static_cast<float>(gy * RADS_PER_DEG),
-                       static_cast<float>(gz * RADS_PER_DEG)};
+  float gyro_rad[3] = {static_cast<float>(gx * RAD_TO_DEG),
+                       static_cast<float>(gy * RAD_TO_DEG),
+                       static_cast<float>(gz * RAD_TO_DEG)};
   float accel_mps2[3] = {ax, ay, az};
 
   ekf12.predict(accel_mps2, gyro_rad);
