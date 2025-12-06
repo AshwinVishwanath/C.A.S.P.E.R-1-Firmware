@@ -60,14 +60,20 @@ void logData(File &file, String &buffer, int &count,
 
 void setupFiles()
 {
-  if (!SD.begin(BUILTIN_SDCARD)) {
+  bool sdOk = false;
+#ifdef BUILTIN_SDCARD
+  sdOk = SD.begin(BUILTIN_SDCARD);
+#else
+  sdOk = SD.begin();
+#endif
+
+  if (!sdOk) {
     Serial.println("SD initialization failed!");
     Summarylog("ERROR: SD initialization failed!");
+  } else {
+    Serial.println("SD initialized!");
+    Summarylog("SD initialized!");
   }
-    else{
-      Serial.println("SD initialized!");
-      Summarylog("SD initialized!");
-    }
 
   rawDataFile = SD.open("RawDataFile.txt", FILE_WRITE);
   filteredDataFile = SD.open("FilteredDataFile.txt", FILE_WRITE);
