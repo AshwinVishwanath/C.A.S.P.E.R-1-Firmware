@@ -6,15 +6,14 @@
 /*
  * INS Error-State EKF Summary
  *
- * Nominal states (shared by 12- and 15-state variants):
+ * Nominal states (15-state variant):
  *   p_nom ∈ R^3 : position in navigation frame (Y-up)
  *   v_nom ∈ R^3 : velocity in navigation frame
  *   q_nom ∈ R^4 : unit quaternion (body → navigation)
  *   b_a_nom ∈ R^3 : accelerometer bias (body)
- *   b_g_nom ∈ R^3 : gyro bias (body, only used by 15-state numerics)
+ *   b_g_nom ∈ R^3 : gyro bias (body)
  *
- * Error-state vectors:
- *   12-state δx12 = [δp(3); δv(3); δθ(3); δb_a(3)]
+ * Error-state vector:
  *   15-state δx15 = [δp(3); δv(3); δθ(3); δb_a(3); δb_g(3)]
  *
  * Nominal dynamics:
@@ -43,44 +42,6 @@
  *     Position noise uses simple integrated white accel model σ_p^2 ≈ (1/3) S_a·dt^3
  *   Measurement noise R from BMP388 bench noise: choose σ_baro ≈ 3 m → R = σ_baro^2
  */
-
-class INSEKF12 {
-public:
-  static const int N = 12;
-
-  INSEKF12();
-
-  void initialize(const float *p0, const float *v0, const float *q0,
-                  const float *ba0, const float *bg0);
-  void setDt(float dtSeconds);
-  void setProcessNoiseFromSensors();
-  void setMeasurementNoiseFromSensors();
-  void predict(const float *a_m, const float *w_m);
-  void updateBaro(float z_baro);
-
-  const float *position() const { return p_nom; }
-  const float *velocity() const { return v_nom; }
-  const float *quaternion() const { return q_nom; }
-  const float *accelBias() const { return b_a_nom; }
-  const float *gyroBias() const { return b_g_nom; }
-
-private:
-  float dt;
-  float p_nom[3];
-  float v_nom[3];
-  float q_nom[4];
-  float b_a_nom[3];
-  float b_g_nom[3];
-
-  float P[N][N];
-  float Q[N][N];
-  float R[1][1];
-
-  void resetCovariance();
-  void buildFc(const float *a_corr, const float *w_corr, float Fc[N][N]) const;
-  void propagateCovariance(const float (&Fc)[N][N]);
-  void injectErrorState(const float *dx);
-};
 
 class INSEKF15 {
 public:

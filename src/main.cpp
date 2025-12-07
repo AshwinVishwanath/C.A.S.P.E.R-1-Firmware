@@ -88,7 +88,6 @@ void logEkfStatus(const INSEKF15 &ekf, float relAlt) {
 }
 } // namespace
 
-INSEKF12 ekf12;
 INSEKF15 ekf15;
 
 void setup() {
@@ -105,17 +104,12 @@ void setup() {
   float ba0[3] = {0.0f, 0.0f, 0.0f};
   float bg0[3] = {0.0f, 0.0f, 0.0f};
 
-  ekf12.initialize(p0, v0, q0, ba0, bg0);
-  ekf12.setDt(DT_SEC);
-  ekf12.setProcessNoiseFromSensors();
-  ekf12.setMeasurementNoiseFromSensors();
-
   ekf15.initialize(p0, v0, q0, ba0, bg0);
   ekf15.setDt(DT_SEC);
   ekf15.setProcessNoiseFromSensors();
   ekf15.setMeasurementNoiseFromSensors();
 
-  Serial.println("INS EKF initialized (12- and 15-state).");
+  Serial.println("INS EKF initialized (15-state).");
 }
 
 void loop() {
@@ -142,11 +136,9 @@ void loop() {
                        static_cast<float>(gz * RAD_TO_DEG)};
   float accel_mps2[3] = {ax, ay, az};
 
-  ekf12.predict(accel_mps2, gyro_rad);
   ekf15.predict(accel_mps2, gyro_rad);
 
   float relAlt = getRelativeAltitude();
-  ekf12.updateBaro(relAlt);
   ekf15.updateBaro(relAlt);
 
   emitPlotLine(ekf15);
