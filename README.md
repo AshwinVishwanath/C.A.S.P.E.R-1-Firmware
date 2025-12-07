@@ -11,7 +11,6 @@ The project aims to achieve precise real-time tracking for aerospace application
 - **Real-Time Processing:** Runs at a 1 kHz update rate on the Teensy 4.1, allowing for high-speed flight dynamics tracking.
 - **Data Filtering:** Employs sensor offset calibration and low-pass filtering to improve measurement accuracy.
 - **Calibration:** Automatically calibrates IMU and barometric sensors before operation.
-- **Data Logging:** Writes raw and filtered sensor data to the SD card for later analysis.
 - **Camera Trigger:** Automatically activates a connected camera shortly after power up.
 - **Orientation Estimation:** Integrates gyroscope rates to provide roll, pitch and yaw angles.
 
@@ -23,13 +22,11 @@ The project aims to achieve precise real-time tracking for aerospace application
 ├── include/                 # Header files
 │   ├── BNO_LUT.h            # Calibration offsets for BNO055
 │   ├── camera_trigger.h     # Camera trigger interface
-│   ├── datalogging.h        # SD card logging helpers
 │   ├── ekf_sensor_fusion.h  # EKF state and update functions
 │   ├── orientation_estimation.h # Gyro integration helpers
 │   └── sensor_setup.h       # Sensor initialization and utilities
 ├── src/                     # Source files
 │   ├── camera_trigger.cpp
-│   ├── datalogging.cpp
 │   ├── ekf_sensor_fusion.cpp
 │   ├── orientation_estimation.cpp
 │   ├── sensor_setup.cpp
