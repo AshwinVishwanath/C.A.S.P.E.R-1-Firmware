@@ -131,9 +131,10 @@ void loop() {
     return;
   }
 
-  float gyro_rad[3] = {static_cast<float>(gx * RAD_TO_DEG),
-                       static_cast<float>(gy * RAD_TO_DEG),
-                       static_cast<float>(gz * RAD_TO_DEG)};
+  // Convert gyro measurements (deg/s from BMX160 driver) to rad/s for the EKF
+  float gyro_rad[3] = {static_cast<float>(gx * DEG_TO_RAD),
+                       static_cast<float>(gy * DEG_TO_RAD),
+                       static_cast<float>(gz * DEG_TO_RAD)};
   float accel_mps2[3] = {ax, ay, az};
 
   ekf15.predict(accel_mps2, gyro_rad);
