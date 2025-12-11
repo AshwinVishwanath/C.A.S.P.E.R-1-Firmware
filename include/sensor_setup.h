@@ -1,25 +1,22 @@
-#ifndef SENSOR_SETUP_H
-#define SENSOR_SETUP_H
+#pragma once
 
-#include <Adafruit_BNO055.h>
-#include <Adafruit_BMP3XX.h>
-#include <DFRobot_BMX160.h>
+#include <Arduino.h>
 
-extern Adafruit_BNO055 bno;
-extern Adafruit_BMP3XX bmp;
-extern DFRobot_BMX160 bmx160;
-
-extern float baselineAltitude; // Baseline for relative altitude
-extern float altitudeBias;     // Bias used to correct altitude readings
-
-void setupSensors();
-void getCorrectedIMUData(float &yaw, float &pitch, float &roll, float &ax_ned, float &ay_ned, float &az_ned, float &mx, float &my, float &mz);
-float getRelativeAltitude();
-float manualCalibrateBMP388(); // Added function declaration
-// Function to get raw sensor data (accelerometer, gyroscope, magnetometer)
-void getSensorData(float &ax, float &ay, float &az, float &gx, float &gy, float &gz, float &mx, float &my, float &mz);
-bool getBMXSensorData(float &ax, float &ay, float &az, float &gx, float &gy, float &gz, float &mx, float &my, float &mz);
+// Forward declarations
 bool isBMX160Ready();
 
-#endif // SENSOR_SETUP_H
+// One-time sensor init
+void setupSensors();
 
+// Optional manual baro calibration (blocking, 1000 samples)
+float manualCalibrateBMP388();
+
+// Simple relative altitude helper (optional)
+float getRelativeAltitude();
+
+// Live sensor read functions for EKF
+bool ReadBmxAccelGyro(float accel_bmx[3], float gyro_bmx_deg[3]);
+bool ReadBnoAccelGyroMag(float accel_bno[3],
+                         float gyro_bno_rad[3],
+                         float mag_bno[3]);
+bool ReadBmpAltitude(float &altitude_m);

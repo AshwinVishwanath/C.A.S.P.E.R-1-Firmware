@@ -1,94 +1,132 @@
 #include <Arduino.h>
+#include <cstddef>
 #include <math.h>
 
-#include "ins_ekf.h"
+#include "dual_imu_ekf.h"
 #include "sensor_setup.h"
 
-// Core loop at 200 Hz (5 ms)
+using namespace dual_imu_ekf;
+
 namespace {
-constexpr uint32_t LOOP_PERIOD_US = 5000U;
-constexpr float DT_SEC = 0.005f;
+constexpr uint32_t LOOP_PERIOD_US = 5000U; // 200 Hz
+constexpr float DEG_TO_RAD_F = static_cast<float>(M_PI / 180.0);
 constexpr uint8_t PLOT_PRECISION = 4U;
 
-void quaternionToEuler(const float *q, float &roll, float &pitch, float &yaw) {
-  const float sinr_cosp = 2.0f * (q[0] * q[1] + q[2] * q[3]);
-  const float cosr_cosp = 1.0f - 2.0f * (q[1] * q[1] + q[2] * q[2]);
-  roll = atan2f(sinr_cosp, cosr_cosp);
+EkfState g_state;
+float g_P[N_STATE][N_STATE];
+EkfConfig g_config = {};
 
-  const float sinp = 2.0f * (q[0] * q[2] - q[3] * q[1]);
-  if (fabsf(sinp) >= 1.0f) {
-    pitch = copysignf(PI / 2.0f, sinp);
-  } else {
-    pitch = asinf(sinp);
+void FillDefaultConfig() {
+  // Noise placeholders; tune using sensor characterisation.
+  const float sigma_gyro_bmx[3] = {0.02f, 0.02f, 0.02f};
+  const float sigma_gyro_bno[3] = {0.01f, 0.01f, 0.01f};
+  const float sigma_accel_bmx[3] = {0.25f, 0.25f, 0.25f};
+  const float sigma_accel_bno[3] = {0.15f, 0.15f, 0.15f};
+
+  for (std::size_t i = 0U; i < 3U; ++i) {
+    g_config.imuNoise.sigma_gyro_bmx[i] = sigma_gyro_bmx[i];
+    g_config.imuNoise.sigma_gyro_bno[i] = sigma_gyro_bno[i];
+    g_config.imuNoise.sigma_accel_bmx[i] = sigma_accel_bmx[i];
+    g_config.imuNoise.sigma_accel_bno[i] = sigma_accel_bno[i];
   }
 
-  const float siny_cosp = 2.0f * (q[0] * q[3] + q[1] * q[2]);
-  const float cosy_cosp = 1.0f - 2.0f * (q[2] * q[2] + q[3] * q[3]);
-  yaw = atan2f(siny_cosp, cosy_cosp);
+  g_config.sigma_baro_alt = 3.0f;
+  g_config.sigma_mag[0] = 0.8f;
+  g_config.sigma_mag[1] = 0.8f;
+  g_config.sigma_mag[2] = 0.8f;
+  g_config.sigma_bias_gyro = 1e-4f;
+  g_config.sigma_bias_accel = 1e-3f;
+
+  // Reference magnetic field (approximate placeholder).
+  g_config.B_N[0] = 0.2f;
+  g_config.B_N[1] = 0.0f;
+  g_config.B_N[2] = 0.5f;
+
+  // BMX frame is rotated -90 deg about Z to align with BNO/body frame (Y-up).
+  g_config.R_B_body_from_BMX[0][0] = 0.0f;
+  g_config.R_B_body_from_BMX[0][1] = -1.0f;
+  g_config.R_B_body_from_BMX[0][2] = 0.0f;
+  g_config.R_B_body_from_BMX[1][0] = 1.0f;
+  g_config.R_B_body_from_BMX[1][1] = 0.0f;
+  g_config.R_B_body_from_BMX[1][2] = 0.0f;
+  g_config.R_B_body_from_BMX[2][0] = 0.0f;
+  g_config.R_B_body_from_BMX[2][1] = 0.0f;
+  g_config.R_B_body_from_BMX[2][2] = 1.0f;
+
+  // BNO frame defines body frame.
+  g_config.R_B_body_from_BNO[0][0] = 1.0f;
+  g_config.R_B_body_from_BNO[0][1] = 0.0f;
+  g_config.R_B_body_from_BNO[0][2] = 0.0f;
+  g_config.R_B_body_from_BNO[1][0] = 0.0f;
+  g_config.R_B_body_from_BNO[1][1] = 1.0f;
+  g_config.R_B_body_from_BNO[1][2] = 0.0f;
+  g_config.R_B_body_from_BNO[2][0] = 0.0f;
+  g_config.R_B_body_from_BNO[2][1] = 0.0f;
+  g_config.R_B_body_from_BNO[2][2] = 1.0f;
+
+  // Initial covariance diagonal.
+  const float initP[N_STATE] = {1.0f, 1.0f, 1.0f,   // position
+                                0.5f, 0.5f, 0.5f,   // velocity
+                                1e-2f, 1e-2f, 1e-2f, 1e-2f, // quaternion
+                                1e-3f, 1e-3f, 1e-3f,       // gyro bias
+                                1e-2f, 1e-2f, 1e-2f};      // accel bias
+  for (std::size_t i = 0U; i < N_STATE; ++i) {
+    g_config.initial_covariance[i] = initP[i];
+  }
 }
 
-void emitPlotLine(const INSEKF15 &ekf) {
-  const float *position = ekf.position();
-  const float *velocity = ekf.velocity();
-  const float *quat = ekf.quaternion();
-
-  float roll = 0.0f;
-  float pitch = 0.0f;
-  float yaw = 0.0f;
-  quaternionToEuler(quat, roll, pitch, yaw);
-
+void emitPlotLine(const EkfOutput &out) {
   Serial.print('>');
   Serial.print("roll:");
-  Serial.print(roll, PLOT_PRECISION);
+  Serial.print(out.rollY, PLOT_PRECISION);
   Serial.print(",pitch:");
-  Serial.print(pitch, PLOT_PRECISION);
+  Serial.print(out.pitchX, PLOT_PRECISION);
   Serial.print(",yaw:");
-  Serial.print(yaw, PLOT_PRECISION);
+  Serial.print(out.yawZ, PLOT_PRECISION);
   Serial.print(",p_x:");
-  Serial.print(position[0], PLOT_PRECISION);
+  Serial.print(out.p[0], PLOT_PRECISION);
   Serial.print(",p_y:");
-  Serial.print(position[1], PLOT_PRECISION);
+  Serial.print(out.p[1], PLOT_PRECISION);
   Serial.print(",p_z:");
-  Serial.print(position[2], PLOT_PRECISION);
+  Serial.print(out.p[2], PLOT_PRECISION);
   Serial.print(",v_x:");
-  Serial.print(velocity[0], PLOT_PRECISION);
+  Serial.print(out.v[0], PLOT_PRECISION);
   Serial.print(",v_y:");
-  Serial.print(velocity[1], PLOT_PRECISION);
+  Serial.print(out.v[1], PLOT_PRECISION);
   Serial.print(",v_z:");
-  Serial.print(velocity[2], PLOT_PRECISION);
+  Serial.print(out.v[2], PLOT_PRECISION);
   Serial.print("\r\n");
 }
 
-void logEkfStatus(const INSEKF15 &ekf, float relAlt) {
-  const float *p = ekf.position();
-  const float *v = ekf.velocity();
-  const float *q = ekf.quaternion();
-  Serial.print("EKF15 p[m]: ");
-  Serial.print(p[0], 3);
+void logEkfStatus(const EkfOutput &out) {
+  Serial.print("EKF p[m]: ");
+  Serial.print(out.p[0], 3);
   Serial.print(", ");
-  Serial.print(p[1], 3);
+  Serial.print(out.p[1], 3);
   Serial.print(", ");
-  Serial.print(p[2], 3);
+  Serial.print(out.p[2], 3);
   Serial.print(" | v[m/s]: ");
-  Serial.print(v[0], 3);
+  Serial.print(out.v[0], 3);
   Serial.print(", ");
-  Serial.print(v[1], 3);
+  Serial.print(out.v[1], 3);
   Serial.print(", ");
-  Serial.print(v[2], 3);
+  Serial.print(out.v[2], 3);
   Serial.print(" | q: ");
-  Serial.print(q[0], 4);
+  Serial.print(out.q[0], 4);
   Serial.print(", ");
-  Serial.print(q[1], 4);
+  Serial.print(out.q[1], 4);
   Serial.print(", ");
-  Serial.print(q[2], 4);
+  Serial.print(out.q[2], 4);
   Serial.print(", ");
-  Serial.print(q[3], 4);
-  Serial.print(" | alt: ");
-  Serial.println(relAlt, 3);
+  Serial.print(out.q[3], 4);
+  Serial.print(" | rpy: ");
+  Serial.print(out.rollY, 3);
+  Serial.print(", ");
+  Serial.print(out.pitchX, 3);
+  Serial.print(", ");
+  Serial.println(out.yawZ, 3);
 }
 } // namespace
-
-INSEKF15 ekf15;
 
 void setup() {
   Serial.begin(115200);
@@ -97,56 +135,73 @@ void setup() {
   }
 
   setupSensors();
-
-  float p0[3] = {0.0f, 0.0f, 0.0f};
-  float v0[3] = {0.0f, 0.0f, 0.0f};
-  float q0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
-  float ba0[3] = {0.0f, 0.0f, 0.0f};
-  float bg0[3] = {0.0f, 0.0f, 0.0f};
-
-  ekf15.initialize(p0, v0, q0, ba0, bg0);
-  ekf15.setDt(DT_SEC);
-  ekf15.setProcessNoiseFromSensors();
-  ekf15.setMeasurementNoiseFromSensors();
-
-  Serial.println("INS EKF initialized (15-state).");
+  FillDefaultConfig();
+  EkfInitialize(g_state, g_P, g_config);
+  Serial.println("Dual-IMU EKF initialized.");
 }
 
 void loop() {
   static uint32_t lastUpdate = micros();
-  uint32_t now = micros();
-  uint32_t elapsed = now - lastUpdate;
+  const uint32_t now = micros();
+  const uint32_t elapsed = now - lastUpdate;
   if (elapsed < LOOP_PERIOD_US) {
     return;
   }
   lastUpdate = now;
 
-  float ax = 0.0f, ay = 0.0f, az = 0.0f;
-  float gx = 0.0f, gy = 0.0f, gz = 0.0f;
-  float mx = 0.0f, my = 0.0f, mz = 0.0f;
+  const float dt_sec = static_cast<float>(elapsed) / 1.0e6f;
 
-  bool bmxOk = getBMXSensorData(ax, ay, az, gx, gy, gz, mx, my, mz);
-  if (!bmxOk) {
-    // If BMX is not ready yet, skip this iteration.
+  float accel_bmx[3];
+  float gyro_bmx_deg[3];
+  if (!ReadBmxAccelGyro(accel_bmx, gyro_bmx_deg)) {
     return;
   }
 
-  // Convert gyro measurements (deg/s from BMX160 driver) to rad/s for the EKF
-  float gyro_rad[3] = {static_cast<float>(gx * DEG_TO_RAD),
-                       static_cast<float>(gy * DEG_TO_RAD),
-                       static_cast<float>(gz * DEG_TO_RAD)};
-  float accel_mps2[3] = {ax, ay, az};
+  float accel_bno[3];
+  float gyro_bno[3];
+  float mag_bno[3];
+  if (!ReadBnoAccelGyroMag(accel_bno, gyro_bno, mag_bno)) {
+    return;
+  }
 
-  ekf15.predict(accel_mps2, gyro_rad);
+  float accel_bmx_body[3];
+  float gyro_bmx_body_rad[3];
+  float gyro_bmx_rad_temp[3];
+  gyro_bmx_rad_temp[0] = gyro_bmx_deg[0] * DEG_TO_RAD_F;
+  gyro_bmx_rad_temp[1] = gyro_bmx_deg[1] * DEG_TO_RAD_F;
+  gyro_bmx_rad_temp[2] = gyro_bmx_deg[2] * DEG_TO_RAD_F;
+  TransformToBody(g_config.R_B_body_from_BMX, accel_bmx, accel_bmx_body);
+  TransformToBody(g_config.R_B_body_from_BMX, gyro_bmx_rad_temp,
+                  gyro_bmx_body_rad);
 
-  float relAlt = getRelativeAltitude();
-  ekf15.updateBaro(relAlt);
+  float accel_bno_body[3];
+  float gyro_bno_body[3];
+  TransformToBody(g_config.R_B_body_from_BNO, accel_bno, accel_bno_body);
+  TransformToBody(g_config.R_B_body_from_BNO, gyro_bno, gyro_bno_body);
 
-  emitPlotLine(ekf15);
+  ImuFusedMeasurement fusedImu;
+  FuseImuMeasurements(g_config.imuNoise, accel_bmx_body, gyro_bmx_body_rad,
+                      accel_bno_body, gyro_bno_body, fusedImu);
+
+  EkfPredict(g_state, g_P, g_config, fusedImu, dt_sec);
+
+  float altitude_m = 0.0f;
+  if (ReadBmpAltitude(altitude_m)) {
+    BaroMeasurement baro{altitude_m};
+    EkfUpdateBaro(g_state, g_P, g_config, baro);
+  }
+
+  MagMeasurement magMeas;
+  TransformToBody(g_config.R_B_body_from_BNO, mag_bno, magMeas.mag_body);
+  EkfUpdateMag(g_state, g_P, g_config, magMeas);
+
+  EkfOutput out;
+  EkfGetOutput(g_state, out);
+  emitPlotLine(out);
 
   static uint32_t logCounter = 0;
-  if ((logCounter++ % 20U) == 0U) { // 10 Hz logging
-    logEkfStatus(ekf15, relAlt);
+  if ((logCounter++ % 20U) == 0U) {
+    logEkfStatus(out);
   }
 }
 
